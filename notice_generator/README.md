@@ -1,0 +1,59 @@
+# Offline LEA Notice Generator — v0.1 proof of concept
+
+This builds the first deliverable of SRS v1.1 (§12, milestone M0). It
+imports *Prepared Notice Data* (one row = one notice), validates and
+normalises it, fills an approved Word template, and generates DOCX, PDF
+and a combined PDF. It runs fully offline.
+
+## Run
+
+```bash
+pip install -r notice_generator/requirements.txt
+# LibreOffice must be installed (or bundled in resources/bundled_renderer/)
+
+python -m notice_generator gui                       # desktop window
+python -m notice_generator validate --data notices_data.xlsx --template Notice_Template.docx
+python -m notice_generator generate --data notices_data.xlsx --template Notice_Template.docx \
+    --out output --officer "Name" --designation "Inspector" --date 02/12/2026 --time 11:00 \
+    --confirm-truncation
+```
+
+Run the tests with `python -m pytest notice_generator/tests`. They use
+synthetic fixtures only. No real case data is committed.
+
+## What v0.1 covers (SRS references)
+
+| Area | Implemented |
+|------|-------------|
+| Import (FR-02) | xlsx / xls / csv, read as **raw text plus cell type**; header-row detection; auto-mapping (exact → case/space-insensitive → synonyms); empty rows skipped |
+| Account numbers (NFR-12) | Never stored as float. Numeric cells become integer text; 16+ digit numeric cells or CSV scientific notation → **V-03** (block until the officer confirms or edits) |
+| Validation (FR-04) | V-01 to V-14 run before generation. V-15 (page count / blank last page) runs after PDF conversion. V-08 checks Sundays plus holidays configured in settings |
+| Review (FR-03) | Searchable, sortable table; status filter; include/exclude; inline edits kept apart from the source and highlighted; source vs printed values; address-variant groups (V-09), shared accounts (V-10) |
+| Formatting (FR-05) | `1,37,00,000/-` (the template supplies ₹), `d1, d2 and d3` transfer dates, `dd/mm/yyyy`, `hh:mm AM`, address line breaks inside the same paragraph, optional `Address:` label removal, name-prefix modes, `{{AmountInWords}}` |
+| Precedence (FR-06) | GUI officer/date/time win by default; "use values from file" switch; conflicts → V-13 |
+| Rendering (FR-07) | docxtpl with autoescape; split-run placeholders; headers/footers/tables; unresolved placeholders → V-14 (the record fails, its DOCX is not kept) |
+| PDF (§6.1) | Headless LibreOffice with an isolated profile, one call per batch, timeout + kill + one retry |
+| Output (FR-09) | `NNN_<Name>_<last4>`; Windows-safe names; never overwrites (`(2)`, `(3)`…); a notice counts as generated only after the PDF opens and its pages are counted; per-record failure isolation; combined PDF with optional duplex padding |
+| Preview (FR-08) | QtPdf view of the actual generated PDF, with page count and V-15 result; "Preview selected record" |
+
+Not in v0.1 (later milestones): case mode and Quick-mode temp handling,
+generation log CSV, template manager and font preflight, Word COM
+engine, backup, installer.
+
+## Layout
+
+```
+importers/  cell_reader, column_mapper (header detection + mapping), prepared_importer
+core/       models, normaliser, formatting, validation, grouping, notice_builder
+templates/  placeholder_parser, renderer
+exporters/  pdf_engine, combiner, batch_exporter
+storage/    configuration (officer profiles), file_manager (naming, no-overwrite)
+ui/         main_window (PySide6)
+```
+
+The engine has no GUI dependency. The CLI and the GUI both call
+`exporters.batch_exporter.run()`.
+
+Configuration lives in `%APPDATA%\NoticeGenerator` on Windows and in
+`~/.notice_generator` elsewhere. Set `NOTICE_GEN_HOME` to override it.
+Set `NOTICE_GEN_SOFFICE` to point at a specific `soffice` executable.

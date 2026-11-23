@@ -1,0 +1,23 @@
+{
+  "_comment": "Offline bank-name list for V-12. Add names or aliases as needed; matching ignores case and extra spaces.",
+  "banks": [
+    "State Bank of India", "SBI", "Bank of Baroda", "Bank of India", "Bank of Maharashtra",
+    "Canara Bank", "Central Bank of India", "Indian Bank", "Indian Overseas Bank",
+    "Punjab National Bank", "PNB", "Punjab & Sind Bank", "Punjab and Sind Bank", "UCO Bank",
+    "Union Bank of India", "IDBI Bank", "Axis Bank", "Bandhan Bank", "City Union Bank",
+    "CSB Bank", "DCB Bank", "Dhanlaxmi Bank", "Federal Bank", "HDFC Bank", "ICICI Bank",
+    "IDFC Bank", "IDFC First Bank", "IndusInd Bank", "Jammu & Kashmir Bank", "J&K Bank",
+    "Karnataka Bank", "Karur Vysya Bank", "Kotak Mahindra Bank", "Nainital Bank", "RBL Bank",
+    "South Indian Bank", "Tamilnad Mercantile Bank", "Yes Bank",
+    "AU Small Finance Bank", "Equitas Small Finance Bank", "ESAF Small Finance Bank",
+    "Jana Small Finance Bank", "Suryoday Small Finance Bank", "Ujjivan Small Finance Bank",
+    "Utkarsh Small Finance Bank", "Unity Small Finance Bank", "Capital Small Finance Bank",
+    "Shivalik Small Finance Bank", "North East Small Finance Bank",
+    "Airtel Payments Bank", "India Post Payments Bank", "Fino Payments Bank", "Paytm Payments Bank",
+    "Jio Payments Bank", "NSDL Payments Bank",
+    "Karnataka Gramin Bank", "Kerala Gramin Bank", "Andhra Pradesh Grameena Vikas Bank",
+    "Telangana Grameena Bank", "Baroda UP Bank", "Prathama UP Gramin Bank",
+    "Saraswat Co-operative Bank", "Cosmos Co-operative Bank", "Standard Chartered Bank",
+    "HSBC", "Citibank", "DBS Bank", "Deutsche Bank"
+  ]
+}
