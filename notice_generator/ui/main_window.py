@@ -25,6 +25,7 @@ from ..core.notice_builder import build_values
 from ..core.validation import load_bank_names, validate_batch
 from ..exporters.batch_exporter import BatchResult, ExportOptions
 from ..exporters.batch_exporter import run as run_batch
+from ..exporters.pdf_engine import find_soffice
 from ..importers.prepared_importer import ImportError_, import_prepared
 from ..storage.configuration import OfficerProfile, load_profiles, save_profiles, temp_dir
 from ..templates.placeholder_parser import expected_page_count, find_placeholders
@@ -190,6 +191,8 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: GenerateWorker | None = None
         self.last_result: BatchResult | None = None
+        self.pdf_available = find_soffice() is not None  # PDF needs LibreOffice; DOCX works without it
+        self._preview_mode = False
 
         self.model = RecordModel(self)
         self.model.changed.connect(self.revalidate)
@@ -336,6 +339,15 @@ class MainWindow(QMainWindow):
         self.chk_duplex = QCheckBox("Duplex padding (each notice starts on an odd page)")
         for wdg in (self.out_label, self.chk_docx, self.chk_pdf, self.chk_comb, self.chk_duplex):
             ol.addWidget(wdg)
+        if not self.pdf_available:
+            for c in (self.chk_pdf, self.chk_comb, self.chk_duplex):
+                c.setChecked(False)
+                c.setEnabled(False)
+                c.setToolTip("PDF output needs LibreOffice, which is not installed on this PC.")
+            note = QLabel("<i>DOCX only: LibreOffice is not installed, so PDF output is off. "
+                          "Preview opens the Word document.</i>")
+            note.setWordWrap(True)
+            ol.addWidget(note)
 
         self.btn_preview = QPushButton("Preview selected record")
         self.btn_preview.clicked.connect(self.on_preview)
@@ -361,6 +373,7 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(w)
         self.results = QListWidget()
         self.results.currentItemChanged.connect(self._on_result_selected)
+        self.results.itemDoubleClicked.connect(self._open_result_file)
         self.preview_info = QLabel("")
         self.preview_info.setWordWrap(True)
         self.pdf_doc = QPdfDocument(self)
@@ -572,7 +585,11 @@ class MainWindow(QMainWindow):
                                 "\n".join(f"{i.rule} {i.message}" for i in r.blocking_issues()))
             return
         out = Path(tempfile.mkdtemp(prefix="preview_", dir=temp_dir()))
-        opts = ExportOptions(docx=False, pdf=True, combined=False, batch_subfolder=False)
+        if self.pdf_available:
+            opts = ExportOptions(docx=False, pdf=True, combined=False, batch_subfolder=False)
+        else:
+            opts = ExportOptions(docx=True, pdf=False, combined=False, batch_subfolder=False)
+        self._preview_mode = True
         was = r.include
         r.include = True
         self._start([r], out, opts, restore=(r, was))
@@ -598,6 +615,10 @@ class MainWindow(QMainWindow):
             return
         if not self._acknowledge_warnings([r for r in included if r.status == Status.WARNING]):
             return
+        if not (self.chk_docx.isChecked() or self.chk_pdf.isChecked()):
+            QMessageBox.information(self, "Generate", "Choose at least one output: DOCX or PDF.")
+            return
+        self._preview_mode = False
         opts = ExportOptions(docx=self.chk_docx.isChecked(), pdf=self.chk_pdf.isChecked(),
                              combined=self.chk_comb.isChecked(), duplex=self.chk_duplex.isChecked())
         self._start(list(self.model.records), self.out_dir, opts)
@@ -643,6 +664,16 @@ class MainWindow(QMainWindow):
 
     def _on_finished(self, res: BatchResult):
         self._end_run()
+        if self._preview_mode and not self.pdf_available:
+            self._preview_mode = False
+            it = res.items[0] if res.items else None
+            if it and it.docx:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(it.docx)))
+                self.progress_label.setText(f"Preview opened: {it.docx.name}")
+            else:
+                QMessageBox.warning(self, "Preview", it.error if it else "Preview failed.")
+            return
+        self._preview_mode = False
         self.last_result = res
         self.results.clear()
         for it in res.items:
@@ -687,7 +718,14 @@ class MainWindow(QMainWindow):
                           + (f" ⚠ {warn}" if warn else " Page check OK."))
         else:
             self.pdf_doc.close()
-            self.preview_info.setText(data.error or "No PDF for this record.")
+            self.preview_info.setText(data.error or (f"{data.docx.name} — double-click to open in Word."
+                                                     if data.docx else "No output for this record."))
+
+    def _open_result_file(self, item: QListWidgetItem):
+        data = item.data(Qt.UserRole)
+        path = data if isinstance(data, Path) else (data.pdf or data.docx)
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def show_pdf(self, path: Path, info: str):
         self.pdf_doc.close()

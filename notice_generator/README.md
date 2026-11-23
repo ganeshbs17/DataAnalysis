@@ -57,3 +57,28 @@ The engine has no GUI dependency. The CLI and the GUI both call
 Configuration lives in `%APPDATA%\NoticeGenerator` on Windows and in
 `~/.notice_generator` elsewhere. Set `NOTICE_GEN_HOME` to override it.
 Set `NOTICE_GEN_SOFFICE` to point at a specific `soffice` executable.
+
+## Windows exe (DOCX-only)
+
+The GitHub workflow `.github/workflows/build-windows.yml` builds
+`NoticeGenerator.exe` on a Windows runner with PyInstaller
+(`packaging/NoticeGenerator.spec`). It runs on every push to this
+branch and can also be started by hand. Each run:
+
+1. runs the tests;
+2. builds the exe;
+3. runs `NoticeGenerator.exe --selftest`, which renders a test DOCX and
+   opens the main window offscreen;
+4. uploads `NoticeGenerator-windows.zip` as a build artifact.
+
+To install, download the zip from the workflow run, unzip it anywhere and
+run `NoticeGenerator\NoticeGenerator.exe`. No Python and no installer
+are needed.
+
+PDF output needs LibreOffice. When it is not installed, the app runs in
+**DOCX-only mode**: the PDF options are switched off, and "Preview
+selected record" opens the generated Word document. If LibreOffice is
+installed later, the PDF options turn on automatically.
+
+The exe is not code-signed, so Windows SmartScreen or antivirus software
+may warn about it until it is signed or whitelisted (SRS §6.1).

@@ -1,0 +1,51 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: [claude/new-session-klzj3w, main, master]
+    paths:
+      - "notice_generator/**"
+      - "packaging/**"
+      - ".github/workflows/build-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r notice_generator/requirements.txt pyinstaller
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest notice_generator/tests -q
+
+      - name: Build exe
+        run: pyinstaller packaging/NoticeGenerator.spec --noconfirm
+
+      - name: Self-test the built exe
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process -FilePath dist/NoticeGenerator/NoticeGenerator.exe -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content dist/NoticeGenerator/selftest.log
+          if ($p.ExitCode -ne 0) { exit 1 }
+          Remove-Item dist/NoticeGenerator/selftest.log
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path dist/NoticeGenerator -DestinationPath NoticeGenerator-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NoticeGenerator-windows
+          path: NoticeGenerator-windows.zip
+          retention-days: 30
