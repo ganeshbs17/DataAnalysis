@@ -60,9 +60,39 @@ def selftest() -> int:
         return 1
 
 
+def install_error_handler() -> None:
+    """Show uncaught errors in a message box and log them (the windowed exe has no console)."""
+    import datetime as dt
+
+    from .storage.configuration import app_dir
+
+    def hook(exc_type, exc, tb):
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        try:
+            log = app_dir() / "logs" / "error.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(f"--- {dt.datetime.now().isoformat(timespec='seconds')}\n{text}\n")
+        except OSError:
+            log = None
+        try:
+            from PySide6.QtWidgets import QApplication, QMessageBox
+
+            if QApplication.instance():
+                QMessageBox.critical(None, "Something went wrong",
+                                     f"{exc_type.__name__}: {exc}\n\n"
+                                     + (f"Details were saved to:\n{log}" if log else ""))
+        except Exception:  # noqa: BLE001
+            pass
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = hook
+
+
 def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
+    install_error_handler()
     from PySide6.QtWidgets import QApplication
 
     from .ui.main_window import MainWindow

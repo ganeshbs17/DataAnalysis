@@ -232,3 +232,59 @@ def test_wizard_gui(filled_notice, tmp_path, monkeypatch):
     assert lib.table.rowCount() == 1 and lib.current().id == w.saved_spec.id
     app.processEvents()
     time.sleep(0)
+
+
+def test_make_field_button_click(filled_notice, tmp_path, monkeypatch):
+    """Click the real button (regression: clicked(bool) used to arrive as `spec`)."""
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+
+    from notice_generator.ui import template_wizard as tw
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+
+    def fake_exec(self):
+        self.name.setCurrentText("SuspectName")
+        return QDialog.Accepted
+
+    monkeypatch.setattr(tw.FieldDialog, "exec", fake_exec)
+    w = tw.TemplateWizard(store=TemplateStore(tmp_path / "Templates"))
+    w.path.setText(str(filled_notice))
+    w.tname.setText("Click test")
+    w._next()
+    w.show()
+    assert not w.btn_make.isEnabled()          # nothing selected yet
+    w.viewer.setTextCursor(w.viewer.document().find("RAVI KUMAR"))
+    app.processEvents()
+    assert w.btn_make.isEnabled()
+    QTest.mouseClick(w.btn_make, Qt.LeftButton)
+    assert "SuspectName" in w.editor.placeholders()
+    assert w.field_list.count() == 1
+    assert w.editor.count_occurrences("RAVI KUMAR") == 0   # both places replaced
+
+
+def test_error_handler_logs(tmp_path, monkeypatch):
+    import sys
+
+    monkeypatch.setenv("NOTICE_GEN_HOME", str(tmp_path))
+    from notice_generator.main import install_error_handler
+
+    from PySide6.QtWidgets import QMessageBox
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: shown.append(a)))
+    old = sys.excepthook
+    monkeypatch.setattr(sys, "__excepthook__", lambda *a: None)
+    try:
+        install_error_handler()
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            sys.excepthook(*sys.exc_info())
+    finally:
+        sys.excepthook = old
+    assert "ValueError: boom" in (tmp_path / "logs" / "error.log").read_text(encoding="utf-8")

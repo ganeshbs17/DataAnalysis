@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QTextBlockFormat, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-                               QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+                               QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMenu,
                                QListWidgetItem, QMessageBox, QPushButton, QSplitter, QStackedWidget,
                                QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
@@ -171,7 +171,13 @@ class TemplateWizard(QDialog):
         self.viewer.setStyleSheet("QTextEdit { background: white; color: black; }")
         self.btn_make = QPushButton("Make field from selection")
         self.btn_make.setStyleSheet("font-weight: bold; padding: 6px;")
-        self.btn_make.clicked.connect(self.make_field_from_selection)
+        # A no-argument slot: clicked(bool) must not reach make_field_from_selection(spec=...).
+        self.btn_make.clicked.connect(self.on_make_field)
+        self.btn_make.setEnabled(False)
+        self.viewer.selectionChanged.connect(
+            lambda: self.btn_make.setEnabled(self.viewer.textCursor().hasSelection()))
+        self.viewer.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.viewer.customContextMenuRequested.connect(self._viewer_menu)
         self.field_list = QListWidget()
         self.field_list.itemDoubleClicked.connect(self._edit_field)
         btn_edit = QPushButton("Change type…")
@@ -362,6 +368,22 @@ class TemplateWizard(QDialog):
         if pa is None or pb is None:
             raise EditError("The selection includes a section label. Select only text from the notice.")
         return pa, a - ba.position(), pb, b - bb.position(), c.selectedText()
+
+    def _viewer_menu(self, pos):
+        menu = QMenu(self)
+        act = menu.addAction("Make field from selection")
+        act.setEnabled(self.viewer.textCursor().hasSelection())
+        act.triggered.connect(self.on_make_field)
+        menu.addSeparator()
+        menu.addAction("Copy").triggered.connect(self.viewer.copy)
+        menu.exec(self.viewer.mapToGlobal(pos))
+
+    def on_make_field(self, *_):
+        """Button / context-menu slot: ask for the field details, then mark the selection."""
+        try:
+            self.make_field_from_selection()
+        except Exception as e:  # noqa: BLE001 - never fail silently in the windowed exe
+            QMessageBox.warning(self, "Make field", f"The field could not be created: {e}")
 
     def make_field_from_selection(self, spec: FieldSpec | None = None, replace_all: bool | None = None):
         try:
