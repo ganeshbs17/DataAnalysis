@@ -61,3 +61,23 @@ def save_profiles(profiles: list[OfficerProfile]) -> None:
     tmp.write_text(json.dumps({"profiles": [asdict(p) for p in profiles]}, indent=2, ensure_ascii=False),
                    encoding="utf-8")
     os.replace(tmp, f)
+
+
+def _settings_file() -> Path:
+    return config_dir() / "application_settings.json"
+
+
+def load_app_settings() -> dict:
+    try:
+        return json.loads(_settings_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_app_setting(key: str, value) -> None:
+    data = load_app_settings()
+    data[key] = value
+    f = _settings_file()
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, f)

@@ -19,6 +19,7 @@ from ..core.validation import validate_batch
 from ..storage.file_manager import notice_basename, unique_path
 from ..templates.placeholder_parser import expected_page_count, find_placeholders
 from ..templates.renderer import render_docx
+from ..templates.template_store import spec_for_docx
 from .combiner import combine, ends_with_blank_page, page_count
 from .pdf_engine import LibreOfficeEngine, PdfEngineError, get_engine
 
@@ -70,9 +71,10 @@ def run(records: list[Record], settings: NoticeSettings, template: str | Path, o
     batch_id = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     placeholders = find_placeholders(template)
+    spec = spec_for_docx(template)  # field types when the template comes from the library
     if revalidate:
-        validate_batch(records, settings, template_placeholders=placeholders)
-    expected = opts.expected_pages or expected_page_count(template)
+        validate_batch(records, settings, template_placeholders=placeholders, spec=spec)
+    expected = opts.expected_pages or (spec.expected_pages if spec else None) or expected_page_count(template)
 
     folder = out_dir / f"batch_{batch_id}" if opts.batch_subfolder else out_dir
     n = 2
@@ -105,11 +107,15 @@ def run(records: list[Record], settings: NoticeSettings, template: str | Path, o
     # 1. DOCX
     for it in to_make:
         r = it.record
-        vals = build_values(r, settings)
-        stem = notice_basename(r.serial, vals["SuspectName"], vals["SuspectAccountNumber"])
+        vals = build_values(r, settings, spec)
+        name_f = "SuspectName" if vals.get("SuspectName") else next(
+            (f.name for f in (spec.file_fields if spec else []) if f.type == "text" and vals.get(f.name)), "")
+        acc_f = "SuspectAccountNumber" if vals.get("SuspectAccountNumber") else next(
+            (n for n in (spec.names_of_type("account") if spec else []) if vals.get(n)), "")
+        stem = notice_basename(r.serial, vals.get(name_f, "") or "notice", vals.get(acc_f, ""))
         target = unique_path(docx_dir, stem, ".docx")
         try:
-            unresolved = render_docx(template, build_context(r, settings), target)
+            unresolved = render_docx(template, build_context(r, settings, spec), target)
             if unresolved:
                 target.unlink(missing_ok=True)
                 it.status = "failed"

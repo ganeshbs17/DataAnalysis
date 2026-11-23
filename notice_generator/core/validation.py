@@ -42,16 +42,27 @@ def check_bank(name: str, banks: list[str]) -> str | None:
 
 def validate_record(rec: Record, s: NoticeSettings, banks: list[str],
                     template_placeholders: set[str] | None = None,
-                    today: dt.date | None = None) -> list[Issue]:
+                    today: dt.date | None = None, spec=None) -> list[Issue]:
+    """``spec`` (TemplateSpec) switches the field lists to the template's own fields and types."""
     today = today or dt.date.today()
     issues: list[Issue] = []
-    vals = build_values(rec, s)
+    vals = build_values(rec, s, spec)
+    if spec is not None:
+        required = [f.name for f in spec.fields if f.required and f.source == "file"]
+        account_fields = spec.names_of_type("account")
+        amount_fields = spec.names_of_type("amount")
+        date_fields = spec.names_of_type("date", "datelist")
+    else:
+        required = REQUIRED_FIELDS
+        account_fields = list(ACCOUNT_FIELDS)
+        amount_fields = ["AmountDeposited"]
+        date_fields = ["DateOfTransfer"]
 
     # V-01 required fields
-    for f in REQUIRED_FIELDS:
-        if f == "AmountDeposited":
+    for f in required:
+        if f in amount_fields:
             if not normalise_text(rec.text(f)):
-                issues.append(Issue("V-01", Severity.BLOCK, "Amount is empty.", f))
+                issues.append(Issue("V-01", Severity.BLOCK, f"{f} (amount) is empty.", f))
             continue
         if not vals.get(f):
             issues.append(Issue("V-01", Severity.BLOCK, f"{f} is empty.", f))
@@ -62,7 +73,7 @@ def validate_record(rec: Record, s: NoticeSettings, banks: list[str],
             issues.append(Issue("V-01", Severity.BLOCK, f"{f} is not set. Choose it in the notice settings.", f))
 
     # V-02 / V-03 / V-04 account numbers
-    for f in ACCOUNT_FIELDS:
+    for f in account_fields:
         acc = vals.get(f, "")
         if not acc:
             continue
@@ -81,29 +92,29 @@ def validate_record(rec: Record, s: NoticeSettings, banks: list[str],
                                 f"{f} has {len(digits)} digits (expected 9–18).", f))
 
     # V-05 amount
-    raw_amt = normalise_text(rec.text("AmountDeposited"))
-    if raw_amt:
-        amt = fmt.parse_amount(raw_amt)
-        if amt is None:
-            issues.append(Issue("V-05", Severity.BLOCK, f"Amount '{raw_amt}' cannot be read as a number.",
-                                "AmountDeposited"))
-        elif amt <= 0:
-            issues.append(Issue("V-05", Severity.BLOCK, "Amount must be greater than zero.", "AmountDeposited"))
+    for af in amount_fields:
+        raw_amt = normalise_text(rec.text(af))
+        if raw_amt:
+            amt = fmt.parse_amount(raw_amt)
+            if amt is None:
+                issues.append(Issue("V-05", Severity.BLOCK, f"{af} '{raw_amt}' cannot be read as a number.", af))
+            elif amt <= 0:
+                issues.append(Issue("V-05", Severity.BLOCK, f"{af} must be greater than zero.", af))
 
-    # V-06 transfer dates
-    tv = rec.typed_value("DateOfTransfer")
-    parts = [tv] if tv else [fmt.parse_date(p) for p in fmt.split_dates(rec.text("DateOfTransfer"))]
-    raw_parts = fmt.split_dates(rec.text("DateOfTransfer")) if not tv else [str(tv)]
-    for raw_p, d in zip(raw_parts, parts):
-        if isinstance(d, dt.datetime):
-            d = d.date()
-        if d is None:
-            issues.append(Issue("V-06", Severity.WARNING,
-                                f"Transfer date '{raw_p}' cannot be read; it will be printed as written.",
-                                "DateOfTransfer"))
-        elif s.notice_date and d > s.notice_date:
-            issues.append(Issue("V-06", Severity.WARNING,
-                                f"Transfer date {d:%d.%m.%Y} is after the notice date.", "DateOfTransfer"))
+    # V-06 dates from the file
+    for df in date_fields:
+        tv = rec.typed_value(df)
+        parts = [tv] if tv else [fmt.parse_date(p) for p in fmt.split_dates(rec.text(df))]
+        raw_parts = fmt.split_dates(rec.text(df)) if not tv else [str(tv)]
+        for raw_p, d in zip(raw_parts, parts):
+            if isinstance(d, dt.datetime):
+                d = d.date()
+            if d is None:
+                issues.append(Issue("V-06", Severity.WARNING,
+                                    f"{df}: date '{raw_p}' cannot be read; it will be printed as written.", df))
+            elif s.notice_date and d > s.notice_date:
+                issues.append(Issue("V-06", Severity.WARNING,
+                                    f"{df}: date {d:%d.%m.%Y} is after the notice date.", df))
 
     # V-07 / V-08 appearance date
     ad = e.appearance_date
@@ -143,11 +154,12 @@ def validate_record(rec: Record, s: NoticeSettings, banks: list[str],
 
 
 def validate_batch(records: list[Record], s: NoticeSettings, banks: list[str] | None = None,
-                   template_placeholders: set[str] | None = None, today: dt.date | None = None) -> None:
+                   template_placeholders: set[str] | None = None, today: dt.date | None = None,
+                   spec=None) -> None:
     """Run all rules and store results on each record (in place)."""
     banks = load_bank_names() if banks is None else banks
     for r in records:
-        r.issues = validate_record(r, s, banks, template_placeholders, today)
+        r.issues = validate_record(r, s, banks, template_placeholders, today, spec)
 
     for grp in address_variant_groups(records):
         for r in grp:

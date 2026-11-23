@@ -45,8 +45,38 @@ def effective_gui_fields(rec: Record, s: NoticeSettings) -> Effective:
     return e
 
 
-def build_values(rec: Record, s: NoticeSettings) -> dict[str, str]:
-    """Formatted plain-text values keyed by placeholder name. Empty string = missing."""
+_STANDARD_KEYS = {"SuspectName", "Address", "SuspectBankName", "SuspectAccountNumber", "BankAccountName",
+                  "BankAccountNumber", "AmountDeposited", "AmountInWords", "DateOfTransfer", "OfficerName",
+                  "OfficerDesignation", "AppearanceDate", "AppearanceTime", "NoticeDate", "CaseRef", "CaseNumber"}
+
+
+def format_by_type(rec: Record, name: str, ftype: str, s: NoticeSettings) -> str:
+    """Format a template-defined field by its declared type (Create-Template wizard)."""
+    text = rec.text(name)
+    value = rec.typed_value(name)
+    if ftype == "multiline":
+        return normalise_address(text, s.remove_address_label)
+    if ftype == "amount":
+        amt = fmt.parse_amount(text)
+        return fmt.format_amount(amt, s.amount_suffix) if amt is not None and amt > 0 else ""
+    if ftype == "account":
+        return normalise_account(text)
+    if ftype in ("date", "datelist"):
+        if ftype == "date":
+            d = fmt.to_date(value, text)
+            if d:
+                return d.strftime(s.transfer_date_format)
+        return fmt.format_transfer_dates(text, s.transfer_date_format, value)[0]
+    if ftype == "time":
+        t = fmt.to_time(value, text)
+        return fmt.format_time(t) if t else normalise_text(text)
+    return normalise_text(text).replace("\n", " ")
+
+
+def build_values(rec: Record, s: NoticeSettings, spec=None) -> dict[str, str]:
+    """Formatted plain-text values keyed by placeholder name. Empty string = missing.
+
+    ``spec`` (a ``TemplateSpec``) declares the type of each template-defined field."""
     v: dict[str, str] = {}
     v["SuspectName"] = apply_prefix_mode(rec.text("SuspectName"), s.prefix_mode).replace("\n", " ")
     v["Address"] = normalise_address(rec.text("Address"), s.remove_address_label)
@@ -72,6 +102,16 @@ def build_values(rec: Record, s: NoticeSettings) -> dict[str, str]:
     v["CaseRef"] = s.case_ref.strip()
     v["CaseNumber"] = s.case_ref.strip()
 
+    if spec is not None:
+        for f in spec.fields:
+            if f.source == "file" and f.name not in _STANDARD_KEYS:
+                v[f.name] = format_by_type(rec, f.name, f.type, s)
+        if not v["AmountInWords"]:
+            amount_fields = [f.name for f in spec.fields if f.type == "amount" and f.source == "file"]
+            if amount_fields:
+                amt = fmt.parse_amount(rec.text(amount_fields[0]))
+                v["AmountInWords"] = fmt.amount_in_words(amt) if amt is not None and amt > 0 else ""
+
     # Extra columns pass through as normalised text.
     for name in rec.source:
         if name not in v:
@@ -79,11 +119,11 @@ def build_values(rec: Record, s: NoticeSettings) -> dict[str, str]:
     return v
 
 
-def build_context(rec: Record, s: NoticeSettings) -> dict[str, object]:
+def build_context(rec: Record, s: NoticeSettings, spec=None) -> dict[str, object]:
     """docxtpl context. Multi-line values become ``Listing`` so ``\\n`` prints as a Word
     line break inside the same paragraph and run (keeping its formatting)."""
     ctx: dict[str, object] = {}
-    for k, val in build_values(rec, s).items():
+    for k, val in build_values(rec, s, spec).items():
         if val == "":
             continue  # left undefined → reported as unresolved (V-14)
         ctx[k] = Listing(val) if "\n" in val else val

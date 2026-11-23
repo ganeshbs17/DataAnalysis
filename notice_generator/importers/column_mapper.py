@@ -37,35 +37,44 @@ class ColumnMapping:
     field_to_col: dict[str, int] = field(default_factory=dict)
     how: dict[str, str] = field(default_factory=dict)   # field -> exact|normalised|synonym|manual
     extra_cols: dict[str, int] = field(default_factory=dict)
+    fields: list[str] = field(default_factory=lambda: list(FIELDS))
 
     @property
     def unmapped_fields(self) -> list[str]:
-        return [f for f in FIELDS if f not in self.field_to_col]
+        return [f for f in self.fields if f not in self.field_to_col]
 
 
-def _known_lookup(synonyms: dict[str, list[str]]) -> dict[str, str]:
+def _known_lookup(synonyms: dict[str, list[str]], fields=None) -> dict[str, str]:
     lookup = {}
-    for f in FIELDS:
+    flds = list(fields or FIELDS)
+    for f in flds:
         lookup[norm_header(f)] = f
     for f, syns in synonyms.items():
+        if f not in flds:
+            continue
         for s in syns:
             lookup.setdefault(norm_header(s), f)
     return lookup
 
 
-def detect_header_row(rows: list[list[RawCell]], synonyms=None, max_scan: int = 30) -> int | None:
-    """Return the 1-based index of the first row matching ≥3 known field names."""
-    lookup = _known_lookup(synonyms or DEFAULT_SYNONYMS)
+def detect_header_row(rows: list[list[RawCell]], synonyms=None, max_scan: int = 30,
+                      fields: list[str] | None = None) -> int | None:
+    """Return the 1-based index of the first row matching ≥3 known field names
+    (or all of them, when the template has fewer than 3 fields)."""
+    lookup = _known_lookup(synonyms or DEFAULT_SYNONYMS, fields)
+    need = min(3, len(set(lookup.values()))) or 1
     for i, row in enumerate(rows[:max_scan], start=1):
         hits = {lookup[norm_header(c.text)] for c in row if norm_header(c.text) in lookup}
-        if len(hits) >= 3:
+        if len(hits) >= need:
             return i
     return None
 
 
-def map_columns(headers: list[str], header_row: int, synonyms=None) -> ColumnMapping:
+def map_columns(headers: list[str], header_row: int, synonyms=None,
+                fields: list[str] | None = None) -> ColumnMapping:
     synonyms = synonyms or DEFAULT_SYNONYMS
-    m = ColumnMapping(header_row=header_row, headers=headers)
+    flds = list(fields or FIELDS)  # the template's data fields
+    m = ColumnMapping(header_row=header_row, headers=headers, fields=flds)
     used: set[int] = set()
 
     def assign(f: str, col: int, how: str):
@@ -74,13 +83,13 @@ def map_columns(headers: list[str], header_row: int, synonyms=None) -> ColumnMap
         used.add(col)
 
     # 1. exact
-    for f in FIELDS:
+    for f in flds:
         for i, h in enumerate(headers):
             if i not in used and h == f:
                 assign(f, i, "exact")
                 break
     # 2. case/space-insensitive
-    for f in FIELDS:
+    for f in flds:
         if f in m.field_to_col:
             continue
         for i, h in enumerate(headers):
@@ -88,7 +97,7 @@ def map_columns(headers: list[str], header_row: int, synonyms=None) -> ColumnMap
                 assign(f, i, "normalised")
                 break
     # 3. synonyms
-    for f in FIELDS:
+    for f in flds:
         if f in m.field_to_col:
             continue
         syns = {norm_header(s) for s in synonyms.get(f, [])}

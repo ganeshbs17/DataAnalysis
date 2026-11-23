@@ -15,7 +15,7 @@ from PySide6.QtCore import (QAbstractTableModel, QDate, QModelIndex, QObject, QS
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QFileDialog, QFormLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QFileDialog, QFormLayout,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMainWindow, QMessageBox, QProgressBar, QPushButton, QSplitter,
                                QTableView, QTabWidget, QTextBrowser, QTimeEdit, QToolBar, QVBoxLayout, QWidget)
@@ -27,11 +27,16 @@ from ..exporters.batch_exporter import BatchResult, ExportOptions
 from ..exporters.batch_exporter import run as run_batch
 from ..exporters.pdf_engine import find_soffice
 from ..importers.prepared_importer import ImportError_, import_prepared
-from ..storage.configuration import OfficerProfile, load_profiles, save_profiles, temp_dir
+from ..storage.configuration import (OfficerProfile, load_app_settings, load_profiles, save_app_setting,
+                                     save_profiles, temp_dir)
 from ..templates.placeholder_parser import expected_page_count, find_placeholders
+from ..templates.template_store import TYPE_LABELS, TemplateSpec, TemplateStore, spec_for_docx
+from .import_mapping_dialog import ImportMappingDialog
+from .template_library import TemplateLibrary
+from .template_wizard import TemplateWizard, download_copy
 
 # (header, field or None, editable)
-COLUMNS = [
+DEFAULT_COLUMNS = [
     ("", None, False),
     ("#", None, False),
     ("Status", None, False),
@@ -44,6 +49,19 @@ COLUMNS = [
     ("Victim account", "BankAccountNumber", True),
     ("Issues", None, False),
 ]
+DEFAULT_DETAIL_FIELDS = ("SuspectName", "Address", "AmountDeposited", "SuspectBankName", "SuspectAccountNumber",
+                         "BankAccountName", "BankAccountNumber", "DateOfTransfer", "OfficerName", "AppearanceDate",
+                         "AppearanceTime")
+
+
+def columns_for(spec: TemplateSpec | None) -> list:
+    """Table columns: the standard ones, or the template's own Excel fields."""
+    if spec is None:
+        return DEFAULT_COLUMNS
+    cols = DEFAULT_COLUMNS[:3] + [(f.name, f.name, True) for f in spec.file_fields] + [DEFAULT_COLUMNS[-1]]
+    return cols
+
+
 STATUS_COLOURS = {Status.READY: "#d7f5dd", Status.WARNING: "#fff1c2", Status.BLOCKED: "#f9d0d0",
                   Status.EXCLUDED: "#e4e4e4"}
 EDIT_COLOUR = QColor("#ffe58a")
@@ -57,35 +75,38 @@ class RecordModel(QAbstractTableModel):
         super().__init__(parent)
         self.records: list[Record] = []
         self.settings = NoticeSettings()
+        self.spec: TemplateSpec | None = None
+        self.columns = DEFAULT_COLUMNS
         self._values: list[dict[str, str]] = []
 
-    def set_data(self, records: list[Record], settings: NoticeSettings):
+    def set_data(self, records: list[Record], settings: NoticeSettings, spec: TemplateSpec | None = None):
         self.beginResetModel()
-        self.records, self.settings = records, settings
-        self._values = [build_values(r, settings) for r in records]
+        self.records, self.settings, self.spec = records, settings, spec
+        self.columns = columns_for(spec)
+        self._values = [build_values(r, settings, spec) for r in records]
         self.endResetModel()
 
     def refresh(self):
-        self._values = [build_values(r, self.settings) for r in self.records]
+        self._values = [build_values(r, self.settings, self.spec) for r in self.records]
         if self.records:
-            self.dataChanged.emit(self.index(0, 0), self.index(len(self.records) - 1, len(COLUMNS) - 1))
+            self.dataChanged.emit(self.index(0, 0), self.index(len(self.records) - 1, len(self.columns) - 1))
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.records)
 
     def columnCount(self, parent=QModelIndex()):
-        return len(COLUMNS)
+        return len(self.columns)
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return COLUMNS[section][0]
+            return self.columns[section][0]
         return None
 
     def flags(self, index):
         f = Qt.ItemIsEnabled | Qt.ItemIsSelectable
         if index.column() == 0:
             f |= Qt.ItemIsUserCheckable
-        if COLUMNS[index.column()][2]:
+        if self.columns[index.column()][2]:
             f |= Qt.ItemIsEditable
         return f
 
@@ -94,7 +115,7 @@ class RecordModel(QAbstractTableModel):
             return None
         r = self.records[index.row()]
         col = index.column()
-        _h, fld, _e = COLUMNS[col]
+        _h, fld, _e = self.columns[col]
         if role == STATUS_ROLE:
             return r.status.value
         if col == 0 and role == Qt.CheckStateRole:
@@ -104,7 +125,7 @@ class RecordModel(QAbstractTableModel):
                 return r.serial
             if col == 2:
                 return r.status.value
-            if col == 10:
+            if col == len(self.columns) - 1:
                 c = Counter(i.rule for i in r.issues if i.severity != Severity.INFO)
                 return ", ".join(sorted(c)) if c else ""
             if fld:
@@ -128,8 +149,8 @@ class RecordModel(QAbstractTableModel):
         r = self.records[index.row()]
         if index.column() == 0 and role == Qt.CheckStateRole:
             r.include = Qt.CheckState(value) == Qt.Checked
-        elif role == Qt.EditRole and COLUMNS[index.column()][1]:
-            fld = COLUMNS[index.column()][1]
+        elif role == Qt.EditRole and self.columns[index.column()][1]:
+            fld = self.columns[index.column()][1]
             if value == r.raw(fld).text:
                 r.edits.pop(fld, None)
             else:
@@ -185,6 +206,10 @@ class MainWindow(QMainWindow):
         self.resize(1500, 900)
         self.template: Path | None = None
         self.placeholders: set[str] | None = None
+        self.spec: TemplateSpec | None = None
+        self.store = TemplateStore()
+        self.last_import_path: Path | None = None
+        self.import_choice: tuple[str | None, int | None, dict | None] = (None, None, None)
         self.out_dir: Path | None = None
         self.banks = load_bank_names()
         self.profiles = load_profiles()
@@ -202,14 +227,19 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_ui()
         self._load_profiles_into_combo()
-        self.statusBar().showMessage("Import a prepared notice workbook to begin.")
+        self.statusBar().showMessage("Choose a template (Templates…) and import a data sheet to begin.")
+        last = load_app_settings().get("last_template_id")
+        spec = self.store.get(last) if last else None
+        if spec and spec.docx.exists():
+            self.set_template_spec(spec, remember=False)
 
     # ------------------------------------------------------------------ UI
     def _build_toolbar(self):
         tb = QToolBar("Main")
         tb.setMovable(False)
         self.addToolBar(tb)
-        for text, slot in (("Import data…", self.on_import), ("Choose template…", self.on_choose_template),
+        for text, slot in (("Templates…", self.on_templates), ("Create template…", self.on_create_template),
+                           ("Import data…", self.on_import), ("Column mapping…", self.on_column_mapping),
                            ("Output folder…", self.on_choose_output)):
             act = QAction(text, self)
             act.triggered.connect(slot)
@@ -285,7 +315,12 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         self.template_label = QLabel("<i>No template chosen</i>")
         self.template_label.setWordWrap(True)
+        self.btn_sheet = QPushButton("Download data sheet (Excel)…")
+        self.btn_sheet.setEnabled(False)
+        self.btn_sheet.setToolTip("An empty Excel sheet whose columns match this template's fields.")
+        self.btn_sheet.clicked.connect(self.download_data_sheet)
         form.addRow("Template:", self.template_label)
+        form.addRow("", self.btn_sheet)
 
         self.officer_combo = QComboBox(editable=True)
         self.officer_combo.currentIndexChanged.connect(self._on_profile_selected)
@@ -437,7 +472,7 @@ class MainWindow(QMainWindow):
             return
         s = self.current_settings()
         self.model.settings = s
-        validate_batch(self.model.records, s, self.banks, self.placeholders)
+        validate_batch(self.model.records, s, self.banks, self.placeholders, spec=self.spec)
         self.model.refresh()
         self.show_detail()
         c = Counter(r.status for r in self.model.records)
@@ -456,21 +491,34 @@ class MainWindow(QMainWindow):
         if path:
             self.import_file(path)
 
-    def import_file(self, path: str | Path, sheet: str | None = None):
+    def data_fields(self) -> list[str] | None:
+        return [f.name for f in self.spec.file_fields] if self.spec else None
+
+    def import_file(self, path: str | Path, sheet: str | None = None, header_row: int | None = None,
+                    overrides: dict | None = None, ask_mapping: bool = True):
+        if Path(path) != self.last_import_path and sheet is None:
+            self.import_choice = (None, None, None)
         try:
-            res = import_prepared(path, sheet=sheet)
+            res = import_prepared(path, sheet=sheet, header_row=header_row, overrides=overrides,
+                                  fields=self.data_fields())
         except ImportError_ as e:
-            QMessageBox.warning(self, "Import", str(e))
+            if ask_mapping and QMessageBox.question(
+                    self, "Import", f"{e}\n\nOpen column mapping to choose the sheet, header row and "
+                                    "columns yourself?") == QMessageBox.Yes:
+                self.last_import_path = Path(path)
+                self.on_column_mapping()
             return None
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Import", f"The file could not be read: {e}")
             return None
-        self.model.set_data(res.records, self.current_settings())
+        self.last_import_path = Path(path)
+        self.import_choice = (res.sheet, res.mapping.header_row, overrides)
+        self.model.set_data(res.records, self.current_settings(), self.spec)
         self.table.resizeColumnsToContents()
         self.revalidate()
         mapped = len(res.mapping.field_to_col)
         msg = (f"Imported {len(res.records)} records from sheet '{res.sheet}' "
-               f"(header row {res.mapping.header_row}). {mapped} of 11 columns mapped automatically; "
+               f"(header row {res.mapping.header_row}). {mapped} of {len(res.mapping.fields)} fields mapped; "
                f"{res.skipped_empty} empty rows skipped.")
         if len(res.sheets) > 1:
             msg += "\nOther sheets: " + ", ".join(f"{n} ({c} rows)" for n, c in res.sheets if n != res.sheet)
@@ -478,21 +526,78 @@ class MainWindow(QMainWindow):
             msg += "\n\nWarnings:\n• " + "\n• ".join(res.warnings)
         self.statusBar().showMessage(msg.splitlines()[0])
         self.last_import = res
+        required = {f.name for f in self.spec.file_fields if f.required} if self.spec else set()
+        missing = [f for f in res.mapping.unmapped_fields if f in required]
+        if ask_mapping and missing and QMessageBox.question(
+                self, "Columns not found",
+                "These template fields were not found in the file:\n\n• " + "\n• ".join(missing)
+                + "\n\nChoose the matching columns now?") == QMessageBox.Yes:
+            self.on_column_mapping()
         return res
 
-    def on_choose_template(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose notice template", "", "Word documents (*.docx)")
-        if path:
-            self.set_template(path)
+    def on_column_mapping(self):
+        if not self.last_import_path:
+            QMessageBox.information(self, "Column mapping", "Import a data file first.")
+            return
+        fields = self.data_fields() or list(DEFAULT_DETAIL_FIELDS)
+        required = {f.name for f in self.spec.file_fields if f.required} if self.spec else set(fields[:8])
+        sheet, hr, cur = self.import_choice
+        current = None
+        if getattr(self, "last_import", None) is not None:
+            current = dict(self.last_import.mapping.field_to_col)
+        try:
+            dlg = ImportMappingDialog(self, self.last_import_path, fields, required, sheet, hr, current)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Column mapping", f"The file could not be read: {e}")
+            return
+        if dlg.exec() == QDialog.Accepted:
+            sheet, hr, overrides = dlg.result_mapping()
+            self.import_file(self.last_import_path, sheet, hr, overrides, ask_mapping=False)
+
+    # ------------------------------------------------------------------ templates
+    def on_templates(self):
+        lib = TemplateLibrary(self, self.store, self.spec.id if self.spec else None)
+        if lib.exec() == QDialog.Accepted and lib.selected_spec:
+            self.set_template_spec(lib.selected_spec)
+
+    def on_create_template(self):
+        w = TemplateWizard(self, self.store)
+        if w.exec() == QDialog.Accepted and w.saved_spec:
+            if QMessageBox.question(self, "Template saved", "Use the new template now?") == QMessageBox.Yes:
+                self.set_template_spec(w.saved_spec)
+
+    def set_template_spec(self, spec: TemplateSpec, remember: bool = True):
+        if remember:
+            save_app_setting("last_template_id", spec.id)
+        self.set_template(spec.docx)
+
+    def download_data_sheet(self):
+        if self.spec:
+            download_copy(self, self.spec.data_sheet, f"{self.spec.name}_data_sheet.xlsx",
+                          "Excel workbook (*.xlsx)")
 
     def set_template(self, path: str | Path):
+        old_fields = self.data_fields()
         self.template = Path(path)
+        self.spec = spec_for_docx(self.template)
         self.placeholders = find_placeholders(self.template)
-        pages = expected_page_count(self.template)
-        self.template_label.setText(
-            f"<b>{html.escape(self.template.name)}</b><br>{len(self.placeholders)} placeholders: "
-            f"{html.escape(', '.join(sorted(self.placeholders)))}<br>Expected pages: {pages or 'unknown'}")
-        self.revalidate()
+        pages = (self.spec.expected_pages if self.spec else None) or expected_page_count(self.template)
+        if self.spec:
+            fl = ", ".join(f"{f.name} ({TYPE_LABELS[f.type]})" for f in self.spec.fields)
+            self.template_label.setText(
+                f"<b>{html.escape(self.spec.name)}</b> — version {self.spec.version}<br>"
+                f"{len(self.spec.file_fields)} Excel column(s); fields: {html.escape(fl)}<br>"
+                f"Expected pages: {pages or 'unknown'}")
+        else:
+            self.template_label.setText(
+                f"<b>{html.escape(self.template.name)}</b><br>{len(self.placeholders)} placeholders: "
+                f"{html.escape(', '.join(sorted(self.placeholders)))}<br>Expected pages: {pages or 'unknown'}")
+        self.btn_sheet.setEnabled(self.spec is not None)
+        if self.last_import_path and self.data_fields() != old_fields and self.last_import_path.exists():
+            self.import_file(self.last_import_path, ask_mapping=False)  # re-map columns to the new fields
+        else:
+            self.model.spec = self.spec
+            self.revalidate()
 
     def on_choose_output(self):
         d = QFileDialog.getExistingDirectory(self, "Choose output folder")
@@ -514,11 +619,10 @@ class MainWindow(QMainWindow):
         if r is None:
             self.detail.setHtml("<i>Select a record to see its values and validation results.</i>")
             return
-        vals = build_values(r, self.model.settings)
+        vals = build_values(r, self.model.settings, self.spec)
         rows = []
-        for f in ("SuspectName", "Address", "AmountDeposited", "SuspectBankName", "SuspectAccountNumber",
-                  "BankAccountName", "BankAccountNumber", "DateOfTransfer", "OfficerName", "AppearanceDate",
-                  "AppearanceTime"):
+        names = [f.name for f in self.spec.fields] if self.spec else DEFAULT_DETAIL_FIELDS
+        for f in names:
             src = html.escape(r.raw(f).text).replace("\n", "<br>")
             out = html.escape(vals.get(f, "")).replace("\n", "<br>")
             style = " style='background:#ffe58a'" if r.is_edited(f) else ""
@@ -568,7 +672,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Generate", "Import notice data first.")
             return False
         if not self.template:
-            QMessageBox.information(self, "Generate", "Choose a notice template first.")
+            QMessageBox.information(self, "Generate", "Choose a template first (Templates…).")
             return False
         return True
 

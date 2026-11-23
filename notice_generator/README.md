@@ -58,6 +58,67 @@ Configuration lives in `%APPDATA%\NoticeGenerator` on Windows and in
 `~/.notice_generator` elsewhere. Set `NOTICE_GEN_HOME` to override it.
 Set `NOTICE_GEN_SOFFICE` to point at a specific `soffice` executable.
 
+## Templates: creating, choosing and data sheets
+
+**Templates…** (toolbar) opens the Template Library. Every saved template
+is listed there each time the app starts. For the selected template you
+can:
+
+- use it;
+- view or download the template (Word);
+- view or download its **Excel data sheet**;
+- edit its fields (this saves a new version, and earlier versions are kept);
+- add an existing `.docx` that already contains `{{Field}}` placeholders.
+
+The last template you used is selected automatically next time.
+
+**Create template…** opens a three-step wizard:
+
+1. Choose an existing notice (.docx), for example one already filled in
+   for a case, and give the template a name. The original file is never
+   changed.
+2. Select text with the mouse, for example the recipient's name, and click
+   **Make field**. Then:
+   - choose a field name: a standard one (SuspectName, Address,
+     AmountDeposited, SuspectAccountNumber, DateOfTransfer, …) or your own,
+     e.g. `CaseNo`;
+   - choose a type: Text, Multi-line, Amount, Date, Date list, Time or
+     Account number.
+
+   Repeated text can be replaced everywhere at once. A selection can span
+   several lines, such as a whole address. The new placeholder keeps the
+   formatting of the text it replaced. **Remove field** puts the original
+   text back; **Undo** reverses the last step.
+3. Review the fields and checks (for example, a fixed date still left in
+   the header), then save.
+
+When a template is saved, the app writes an **Excel data sheet** whose
+column headings are the template's fields. Fields the officer sets on the
+settings screen are not columns: OfficerName, OfficerDesignation,
+AppearanceDate, AppearanceTime, NoticeDate and CaseRef. In the sheet:
+
+- account-number columns are pre-formatted as Text, so Excel keeps all
+  16+ digits;
+- a "Field guide" tab explains every field.
+
+Fill in one row per notice and import it with **Import data…**. The
+columns map automatically. If a file's headings differ, use **Column
+mapping…** to choose the worksheet, the header row and the column for
+each field.
+
+Values are formatted by field type:
+
+| Type | Printed as |
+|------|------------|
+| Amount | `20,00,000/-` |
+| Date list | `d1, d2 and d3` |
+| Date | `dd.mm.yyyy` |
+| Time | `hh:mm AM` |
+| Multi-line | Line breaks kept |
+
+Library files are stored in `Templates/<id>/v<N>/` (`template.docx`,
+`data_sheet.xlsx`, `template.json` with the field list and SHA-256).
+
 ## Windows exe (DOCX-only)
 
 The GitHub workflow `.github/workflows/build-windows.yml` builds

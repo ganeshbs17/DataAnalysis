@@ -29,8 +29,12 @@ def list_sheets(path: str | Path) -> list[tuple[str, int]]:
 
 
 def import_prepared(path: str | Path, sheet: str | None = None, header_row: int | None = None,
-                    overrides: dict[str, int] | None = None) -> ImportResult:
-    """Import a prepared-notice workbook. The source file is opened read-only."""
+                    overrides: dict[str, int | None] | None = None,
+                    fields: list[str] | None = None) -> ImportResult:
+    """Import a prepared-notice workbook. The source file is opened read-only.
+
+    ``fields``: the template's data fields (default: the standard 11 columns).
+    ``overrides``: field → 0-based column index chosen by the officer (None = not in file)."""
     p = Path(path)
     sheets = read_workbook(p)
     if not sheets:
@@ -43,20 +47,33 @@ def import_prepared(path: str | Path, sheet: str | None = None, header_row: int 
             raise ImportError_(f"Worksheet '{sheet}' was not found in the file.")
     else:
         # Pick the first sheet that has a recognisable header row.
-        sd = next((s for s in sheets if detect_header_row(s.rows)), None)
+        sd = next((s for s in sheets if detect_header_row(s.rows, fields=fields)), None)
+        if sd is None and header_row:
+            sd = next((s for s in sheets if s.non_empty_rows), sheets[0])  # officer chose the header row
         if sd is None:
             raise ImportError_("No worksheet has a header row with the expected column names. "
                                "Choose the sheet and header row manually.")
 
-    hr = header_row or detect_header_row(sd.rows)
+    hr = header_row or detect_header_row(sd.rows, fields=fields)
     if not hr:
         raise ImportError_(f"No header row found in worksheet '{sd.name}'.")
+    if hr > len(sd.rows):
+        raise ImportError_(f"Row {hr} is beyond the end of worksheet '{sd.name}'.")
     headers = [c.text.strip() for c in sd.rows[hr - 1]]
-    mapping = map_columns(headers, hr)
+    mapping = map_columns(headers, hr, fields=fields)
     if overrides:
         for f, col in overrides.items():
+            if col is None or col < 0:
+                mapping.field_to_col.pop(f, None)
+                mapping.how.pop(f, None)
+                continue
+            for other, c in list(mapping.field_to_col.items()):
+                if c == col and other != f:
+                    mapping.field_to_col.pop(other)
+                    mapping.how.pop(other, None)
             mapping.field_to_col[f] = col
             mapping.how[f] = "manual"
+            mapping.extra_cols = {k: v for k, v in mapping.extra_cols.items() if v != col}
 
     warnings: list[str] = []
     for f in mapping.unmapped_fields:
@@ -64,7 +81,8 @@ def import_prepared(path: str | Path, sheet: str | None = None, header_row: int 
 
     records: list[Record] = []
     skipped = 0
-    for r_idx in range(hr, len(sd.rows)):
+    last = max((i for i, row in enumerate(sd.rows) if any(not c.is_empty for c in row)), default=hr - 1)
+    for r_idx in range(hr, last + 1):  # trailing blank (pre-formatted) rows are ignored
         row = sd.rows[r_idx]
         if all(c.is_empty for c in row):
             skipped += 1
